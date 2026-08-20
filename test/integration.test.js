@@ -2,13 +2,44 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { exchangeAuthorizationCode } from '../lib/bullhorn-oauth.js';
+import {
+  queryBullhornEntityPage,
+  readBullhornEntity,
+} from '../lib/bullhorn-client.js';
 import { decrypt, encrypt } from '../lib/crypto.js';
 import { createOauthState } from '../lib/integration-store.js';
+import { saveBullhornEntitySnapshots } from '../lib/bullhorn-sync.js';
+import {
+  internalAccessFailure,
+  isInternalRequestAuthorized,
+} from '../lib/internal-auth.js';
 
 const originalFetch = globalThis.fetch;
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch;
+  delete process.env.INTEGRATION_ADMIN_KEY;
+});
+
+test('protects internal integration routes with a bearer secret', async () => {
+  process.env.INTEGRATION_ADMIN_KEY = 'internal-test-secret';
+
+  const authorized = new Request('https://example.test/internal', {
+    headers: { Authorization: 'Bearer internal-test-secret' },
+  });
+  const unauthorized = new Request('https://example.test/internal', {
+    headers: { Authorization: 'Bearer wrong-secret' },
+  });
+
+  assert.equal(isInternalRequestAuthorized(authorized), true);
+  assert.equal(isInternalRequestAuthorized(unauthorized), false);
+  assert.equal(internalAccessFailure(authorized), null);
+  assert.equal(internalAccessFailure(unauthorized).status, 401);
+});
+
+test('keeps internal routes closed when no admin secret is configured', () => {
+  const request = new Request('https://example.test/internal');
+  assert.equal(internalAccessFailure(request).status, 503);
 });
 
 test('encrypts integration tokens with authenticated encryption', () => {
@@ -70,4 +101,105 @@ test('uses discovered Bullhorn cluster and configured redirect URI for code exch
     tokenUrl.searchParams.get('redirect_uri'),
     'https://upply-integration-api.vercel.app/api/bullhorn/oauth/callback'
   );
+});
+
+test('reads only allowlisted Bullhorn fields and sends the REST token as a header', async () => {
+  let request;
+  globalThis.fetch = async (url, init) => {
+    request = { url: String(url), init };
+    return Response.json({ data: [{ id: 42 }], count: 1, start: 0 });
+  };
+
+  const page = await queryBullhornEntityPage({
+    entity: 'ClientCorporation',
+    session: {
+      restUrl: 'https://rest-ger.bullhornstaffing.com/rest-services/corp-token/',
+      BhRestToken: 'rest-session-secret',
+    },
+    count: 1,
+  });
+  const url = new URL(request.url);
+
+  assert.equal(page.data[0].id, 42);
+  assert.equal(url.pathname.endsWith('/query/ClientCorporation'), true);
+  assert.equal(url.searchParams.get('fields').includes('*'), false);
+  assert.equal(url.searchParams.get('where'), 'isDeleted=false');
+  assert.equal(request.init.headers.BhRestToken, 'rest-session-secret');
+  assert.equal(url.searchParams.has('BhRestToken'), false);
+});
+
+test('paginates Bullhorn reads until the final partial page', async () => {
+  const starts = [];
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    const start = Number(parsed.searchParams.get('start'));
+    starts.push(start);
+    const data = start === 0 ? [{ id: 1 }, { id: 2 }] : [{ id: 3 }];
+    return Response.json({ data, count: data.length, start });
+  };
+
+  const records = await readBullhornEntity({
+    entity: 'Task',
+    session: {
+      restUrl: 'https://rest-ger.bullhornstaffing.com/rest-services/corp-token/',
+      BhRestToken: 'rest-session-secret',
+    },
+    pageSize: 2,
+  });
+
+  assert.deepEqual(starts, [0, 2]);
+  assert.deepEqual(records.map((record) => record.id), [1, 2, 3]);
+});
+
+test('rejects non-allowlisted Bullhorn entities before making a request', async () => {
+  let called = false;
+  globalThis.fetch = async () => {
+    called = true;
+    return Response.json({ data: [] });
+  };
+
+  await assert.rejects(
+    queryBullhornEntityPage({
+      entity: 'Placement',
+      session: { restUrl: 'https://example.test/', BhRestToken: 'secret' },
+    }),
+    /not allowlisted/
+  );
+  assert.equal(called, false);
+});
+
+test('upserts inbound Bullhorn snapshots with an idempotent external key', async () => {
+  process.env.SUPABASE_URL = 'https://example.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'server-secret';
+  let request;
+  globalThis.fetch = async (url, init) => {
+    request = { url: String(url), init };
+    return new Response(null, { status: 201 });
+  };
+
+  const persisted = await saveBullhornEntitySnapshots({
+    entity: 'ClientCorporation',
+    records: [
+      {
+        id: 28203,
+        name: 'Upply test account',
+        status: 'Active',
+        dateLastModified: 1787224000000,
+        isDeleted: false,
+      },
+    ],
+    syncedAt: new Date('2026-08-20T12:00:00.000Z'),
+  });
+  const url = new URL(request.url);
+  const body = JSON.parse(request.init.body);
+
+  assert.equal(persisted, 1);
+  assert.equal(url.pathname, '/rest/v1/crm_sync');
+  assert.equal(url.searchParams.get('on_conflict'), 'system,entity_type,external_id');
+  assert.equal(body[0].system, 'bullhorn');
+  assert.equal(body[0].entity_type, 'ClientCorporation');
+  assert.equal(body[0].external_id, '28203');
+  assert.equal(body[0].metadata.source, 'live_rest');
+  assert.equal(body[0].metadata.payload.name, 'Upply test account');
+  assert.equal(request.init.headers.Prefer, 'resolution=merge-duplicates,return=minimal');
 });

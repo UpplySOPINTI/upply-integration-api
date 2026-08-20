@@ -1,3 +1,5 @@
+import { internalAccessFailure } from '../../../../lib/internal-auth.js';
+
 export const dynamic = 'force-dynamic';
 
 function safeError(stage, response, body) {
@@ -9,7 +11,10 @@ function safeError(stage, response, body) {
   };
 }
 
-export async function GET() {
+export async function GET(request) {
+  const accessFailure = internalAccessFailure(request);
+  if (accessFailure) return accessFailure;
+
   const clientId = process.env.BULLHORN_CLIENT_ID;
   const clientSecret = process.env.BULLHORN_CLIENT_SECRET;
   const username = process.env.BULLHORN_USERNAME;
