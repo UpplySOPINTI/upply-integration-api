@@ -1,3 +1,7 @@
+import { createOauthState } from '../../../../lib/integration-store.js';
+
+export const dynamic = 'force-dynamic';
+
 export async function GET() {
   try {
     const clientId = process.env.BULLHORN_CLIENT_ID;
@@ -52,6 +56,13 @@ export async function GET() {
     }
 
     const state = globalThis.crypto.randomUUID();
+    await createOauthState({
+      provider: 'bullhorn',
+      state,
+      metadata: {
+        redirectUri,
+      },
+    });
     const authorizeUrl = new URL(`${String(loginInfo.oauthUrl).replace(/\/$/, '')}/authorize`);
     authorizeUrl.searchParams.set('client_id', clientId);
     authorizeUrl.searchParams.set('response_type', 'code');
@@ -62,7 +73,8 @@ export async function GET() {
       status: 302,
       headers: {
         Location: authorizeUrl.toString(),
-        'Set-Cookie': `bh_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
+        'Cache-Control': 'no-store',
+        'Set-Cookie': `__Host-bh_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
       },
     });
   } catch (error) {
