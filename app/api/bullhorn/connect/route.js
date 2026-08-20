@@ -58,12 +58,13 @@ export async function GET() {
     authorizeUrl.searchParams.set('redirect_uri', redirectUri);
     authorizeUrl.searchParams.set('state', state);
 
-    const response = Response.redirect(authorizeUrl.toString(), 302);
-    response.headers.append(
-      'Set-Cookie',
-      `bh_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`
-    );
-    return response;
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: authorizeUrl.toString(),
+        'Set-Cookie': `bh_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
+      },
+    });
   } catch (error) {
     console.error('Bullhorn connect failed', error);
     return Response.json(
