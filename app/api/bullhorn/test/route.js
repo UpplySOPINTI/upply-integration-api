@@ -1,4 +1,11 @@
-export async function GET() {
+import { internalAccessFailure } from '../../../../lib/internal-auth.js';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET(request) {
+  const accessFailure = internalAccessFailure(request);
+  if (accessFailure) return accessFailure;
+
   try {
     const required = {
       BULLHORN_CLIENT_ID: process.env.BULLHORN_CLIENT_ID,
@@ -60,7 +67,10 @@ export async function GET() {
       envConfigured: true,
       bullhornReachable: true,
       usernameConfigured: true,
-      loginInfo,
+      dataCenterId: loginInfo?.dataCenterId ?? null,
+      superClusterId: loginInfo?.superClusterId ?? null,
+      oauthHost: loginInfo?.oauthUrl ? new URL(loginInfo.oauthUrl).host : null,
+      restHost: loginInfo?.restUrl ? new URL(loginInfo.restUrl).host : null,
     });
   } catch (error) {
     console.error('Bullhorn connection test failed', error);

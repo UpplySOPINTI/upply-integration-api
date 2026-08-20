@@ -1,4 +1,11 @@
-export async function GET() {
+import { internalAccessFailure } from '../../../../lib/internal-auth.js';
+
+export const dynamic = 'force-dynamic';
+
+export async function GET(request) {
+  const accessFailure = internalAccessFailure(request);
+  if (accessFailure) return accessFailure;
+
   try {
     const clientId = process.env.BULLHORN_CLIENT_ID;
     const username = process.env.BULLHORN_USERNAME;
@@ -13,7 +20,7 @@ export async function GET() {
           username: !username,
           redirectUri: !redirectUri,
         },
-      }, { status: 503 });
+      }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
     }
 
     const loginInfoUrl = new URL('https://rest.bullhornstaffing.com/rest-services/loginInfo');
@@ -41,6 +48,6 @@ export async function GET() {
       ok: false,
       stage: 'exception',
       error: error instanceof Error ? error.message : 'Unknown error',
-    }, { status: 500 });
+    }, { status: 500, headers: { 'Cache-Control': 'no-store' } });
   }
 }

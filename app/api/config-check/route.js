@@ -8,5 +8,9 @@ export async function GET() {
     BULLHORN_CLIENT_SECRET: Boolean(process.env.BULLHORN_CLIENT_SECRET),
     BULLHORN_REDIRECT_URI: Boolean(process.env.BULLHORN_REDIRECT_URI),
   };
-  return Response.json({ ok: Object.values(checks).every(Boolean), checks });
+  return Response.json({
+    ok: Object.values(checks).every(Boolean),
+    checks,
+    internalAdminConfigured: Boolean(process.env.INTEGRATION_ADMIN_KEY),
+  });
 }
