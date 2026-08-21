@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { exchangeAuthorizationCode } from '../lib/bullhorn-oauth.js';
 import { GET as connectBullhorn } from '../app/api/bullhorn/connect/route.js';
+import { GET as callbackBullhorn } from '../app/api/bullhorn/oauth/callback/route.js';
 import {
   queryBullhornEntityPage,
   readBullhornEntity,
@@ -21,6 +22,7 @@ test.afterEach(() => {
   globalThis.fetch = originalFetch;
   for (const key of [
     'INTEGRATION_ADMIN_KEY',
+    'INTEGRATION_ENCRYPTION_KEY',
     'BULLHORN_CLIENT_ID',
     'BULLHORN_CLIENT_SECRET',
     'BULLHORN_USERNAME',
@@ -115,7 +117,7 @@ test('uses discovered Bullhorn cluster and configured redirect URI for code exch
   );
 });
 
-test('starts Bullhorn OAuth in the browser with persisted state and no credentials', async () => {
+test('starts Bullhorn OAuth without provider state and keeps a one-time browser nonce', async () => {
   process.env.BULLHORN_CLIENT_ID = 'client-id';
   process.env.BULLHORN_USERNAME = 'upplyjobs.api';
   process.env.BULLHORN_REDIRECT_URI =
@@ -138,7 +140,8 @@ test('starts Bullhorn OAuth in the browser with persisted state and no credentia
 
   const response = await connectBullhorn();
   const location = new URL(response.headers.get('location'));
-  const state = location.searchParams.get('state');
+  const setCookie = response.headers.get('set-cookie');
+  const nonce = setCookie.match(/__Host-bh_oauth_nonce=([^;]+)/)?.[1];
 
   assert.equal(response.status, 302);
   assert.equal(location.origin, 'https://auth-ger.bullhornstaffing.com');
@@ -146,12 +149,120 @@ test('starts Bullhorn OAuth in the browser with persisted state and no credentia
   assert.equal(location.searchParams.get('client_id'), 'client-id');
   assert.equal(location.searchParams.get('response_type'), 'code');
   assert.equal(location.searchParams.get('redirect_uri'), process.env.BULLHORN_REDIRECT_URI);
-  assert.ok(state);
+  assert.equal(location.searchParams.has('state'), false);
+  assert.ok(nonce);
   assert.equal(location.searchParams.has('action'), false);
   assert.equal(location.searchParams.has('username'), false);
   assert.equal(location.searchParams.has('password'), false);
-  assert.match(response.headers.get('set-cookie'), new RegExp(`__Host-bh_oauth_state=${state}`));
+  assert.match(setCookie, new RegExp(`__Host-bh_oauth_nonce=${nonce}`));
   assert.equal(requests.length, 2);
+});
+
+test('completes the Bullhorn callback with a valid one-time nonce and matching client', async () => {
+  process.env.BULLHORN_CLIENT_ID = 'client-id';
+  process.env.BULLHORN_CLIENT_SECRET = 'client-secret';
+  process.env.BULLHORN_USERNAME = 'upplyjobs.api';
+  process.env.BULLHORN_REDIRECT_URI =
+    'https://upply-integration-api.vercel.app/api/bullhorn/oauth/callback';
+  process.env.SUPABASE_URL = 'https://example.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'server-secret';
+  process.env.INTEGRATION_ENCRYPTION_KEY = 'b'.repeat(64);
+
+  const nonce = 'one-time-browser-nonce';
+  const requests = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const parsed = new URL(url);
+    requests.push({ url: parsed, init });
+
+    if (parsed.host === 'example.supabase.co' && parsed.pathname.endsWith('/oauth_states')) {
+      return Response.json([{ id: 1, metadata: { oauthMode: 'cookie_nonce_without_provider_state' } }]);
+    }
+    if (parsed.pathname.endsWith('/loginInfo')) {
+      return Response.json({
+        oauthUrl: 'https://auth-ger.bullhornstaffing.com/oauth',
+        restUrl: 'https://rest-ger.bullhornstaffing.com/rest-services',
+        dataCenterId: 7,
+      });
+    }
+    if (parsed.pathname.endsWith('/token')) {
+      return Response.json({ access_token: 'access', refresh_token: 'refresh', expires_in: 600 });
+    }
+    if (parsed.pathname.endsWith('/login')) {
+      return Response.json({
+        BhRestToken: 'rest-token',
+        restUrl: 'https://rest7.bullhornstaffing.com/rest-services/corp-token/',
+      });
+    }
+    if (
+      parsed.host === 'example.supabase.co' &&
+      parsed.pathname.endsWith('/integration_connections')
+    ) {
+      return Response.json([{ provider: 'bullhorn', status: 'connected' }]);
+    }
+    throw new Error(`Unexpected fetch: ${parsed}`);
+  };
+
+  const response = await callbackBullhorn(
+    new Request(
+      `${process.env.BULLHORN_REDIRECT_URI}?code=authorization-code&client_id=client-id`,
+      { headers: { Cookie: `__Host-bh_oauth_nonce=${nonce}` } }
+    )
+  );
+  const body = await response.json();
+  const consumeRequest = requests.find(({ url }) => url.pathname.endsWith('/oauth_states'));
+  const savedConnection = requests.find(({ url }) =>
+    url.pathname.endsWith('/integration_connections')
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(body.ok, true);
+  assert.equal(body.status, 'connected');
+  assert.equal(consumeRequest.init.method, 'PATCH');
+  assert.match(consumeRequest.url.searchParams.get('state_hash'), /^eq\.[0-9a-f]{64}$/);
+  assert.equal(JSON.stringify(consumeRequest).includes(nonce), false);
+  assert.equal(
+    JSON.parse(savedConnection.init.body).metadata.oauthMode,
+    'cookie_nonce_without_provider_state'
+  );
+  assert.match(response.headers.get('set-cookie'), /__Host-bh_oauth_nonce=;/);
+});
+
+test('rejects a stateless Bullhorn callback without the one-time browser nonce', async () => {
+  process.env.BULLHORN_CLIENT_ID = 'client-id';
+  let called = false;
+  globalThis.fetch = async () => {
+    called = true;
+    throw new Error('Callback must fail before an external request.');
+  };
+
+  const response = await callbackBullhorn(
+    new Request('https://example.test/api/bullhorn/oauth/callback?code=code&client_id=client-id')
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(body.stage, 'session');
+  assert.equal(called, false);
+});
+
+test('rejects a stateless Bullhorn callback for a different client id', async () => {
+  process.env.BULLHORN_CLIENT_ID = 'client-id';
+  let called = false;
+  globalThis.fetch = async () => {
+    called = true;
+    throw new Error('Callback must fail before an external request.');
+  };
+
+  const response = await callbackBullhorn(
+    new Request('https://example.test/api/bullhorn/oauth/callback?code=code&client_id=other', {
+      headers: { Cookie: '__Host-bh_oauth_nonce=nonce' },
+    })
+  );
+  const body = await response.json();
+
+  assert.equal(response.status, 400);
+  assert.equal(body.stage, 'client');
+  assert.equal(called, false);
 });
 
 test('reads only allowlisted Bullhorn fields and sends the REST token as a header', async () => {

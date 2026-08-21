@@ -55,26 +55,29 @@ export async function GET() {
       );
     }
 
-    const state = globalThis.crypto.randomUUID();
+    // Bullhorn GER currently crashes when the standard OAuth `state` query
+    // parameter is present. Keep an equivalent one-time nonce entirely between
+    // our browser and server until Bullhorn resolves the upstream defect.
+    const nonce = globalThis.crypto.randomUUID();
     await createOauthState({
       provider: 'bullhorn',
-      state,
+      state: nonce,
       metadata: {
         redirectUri,
+        oauthMode: 'cookie_nonce_without_provider_state',
       },
     });
     const authorizeUrl = new URL(`${String(loginInfo.oauthUrl).replace(/\/$/, '')}/authorize`);
     authorizeUrl.searchParams.set('client_id', clientId);
     authorizeUrl.searchParams.set('response_type', 'code');
     authorizeUrl.searchParams.set('redirect_uri', redirectUri);
-    authorizeUrl.searchParams.set('state', state);
 
     return new Response(null, {
       status: 302,
       headers: {
         Location: authorizeUrl.toString(),
         'Cache-Control': 'no-store',
-        'Set-Cookie': `__Host-bh_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
+        'Set-Cookie': `__Host-bh_oauth_nonce=${nonce}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
       },
     });
   } catch (error) {
