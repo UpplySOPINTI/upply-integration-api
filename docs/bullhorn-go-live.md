@@ -32,7 +32,15 @@ https://upply-integration-api.vercel.app/api/bullhorn/oauth/callback
 
 1. In the same browser session in which the dedicated read-only API user accepted Bullhorn's terms, open `https://upply-integration-api.vercel.app/api/bullhorn/connect`. Sign in as `upplyjobs.api` if prompted. Because Bullhorn GER currently crashes when the standard OAuth `state` parameter is present, the service uses a temporary compensating control: a hashed, ten-minute, single-use nonce bound to a Secure, HttpOnly browser cookie plus exact callback `client_id` validation. The nonce and credentials are never added to the Bullhorn redirect URL. Remove this workaround and restore provider state as soon as Bullhorn resolves the upstream defect.
 2. Confirm `GET /api/bullhorn/status` reports a connected Bullhorn connection.
-3. Probe all allowed entity permissions without returning entity payloads:
+3. Test the stored connection with five minimal records from Bullhorn's company entity (`ClientCorporation`), `Candidate`, and `JobOrder`. The protected response reports the REST host, HTTP status, token/session presence as booleans, token refresh, and session recreation without returning token values:
+
+```bash
+curl --fail-with-body \
+  -H "Authorization: Bearer $INTEGRATION_ADMIN_KEY" \
+  https://upply-integration-api.vercel.app/api/bullhorn/connection-test
+```
+
+4. Probe all allowed entity permissions without returning entity payloads:
 
 ```bash
 curl --fail-with-body \
@@ -40,7 +48,7 @@ curl --fail-with-body \
   https://upply-integration-api.vercel.app/api/bullhorn/readiness
 ```
 
-4. Run a capped dry-run. This establishes a REST session and counts readable records but writes nothing:
+5. Run a capped dry-run. This establishes a REST session and counts readable records but writes nothing:
 
 ```bash
 curl --fail-with-body \
@@ -51,7 +59,7 @@ curl --fail-with-body \
   https://upply-integration-api.vercel.app/api/bullhorn/sync
 ```
 
-5. Apply the lower-sensitivity CRM and vacancy entities first:
+6. Apply the lower-sensitivity CRM and vacancy entities first:
 
 ```bash
 curl --fail-with-body \
@@ -62,8 +70,8 @@ curl --fail-with-body \
   https://upply-integration-api.vercel.app/api/bullhorn/sync
 ```
 
-6. Validate counts and a small sample in `crm_sync`, then explicitly approve the second batch before importing `Candidate`, `Note`, or `Task` data.
-7. Run the sensitive second batch only after that validation and approval.
+7. Validate counts and a small sample in `crm_sync`, then explicitly approve the second batch before importing `Candidate`, `Note`, or `Task` data.
+8. Run the sensitive second batch only after that validation and approval.
 
 ## Acceptance criteria
 
