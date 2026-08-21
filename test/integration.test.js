@@ -8,6 +8,7 @@ import {
   queryBullhornEntityPage,
   readBullhornEntity,
 } from '../lib/bullhorn-client.js';
+import { getBullhornRestSession } from '../lib/bullhorn-session.js';
 import { decrypt, encrypt } from '../lib/crypto.js';
 import { createOauthState } from '../lib/integration-store.js';
 import { saveBullhornEntitySnapshots } from '../lib/bullhorn-sync.js';
@@ -288,6 +289,140 @@ test('reads only allowlisted Bullhorn fields and sends the REST token as a heade
   assert.equal(url.searchParams.get('where'), 'isDeleted=false');
   assert.equal(request.init.headers.BhRestToken, 'rest-session-secret');
   assert.equal(url.searchParams.has('BhRestToken'), false);
+});
+
+test('limits a Bullhorn probe to an allowlisted field subset', async () => {
+  let requestedUrl;
+  globalThis.fetch = async (url) => {
+    requestedUrl = new URL(url);
+    return Response.json({ data: [{ id: 42, name: 'Example' }], count: 1, start: 0 });
+  };
+
+  await queryBullhornEntityPage({
+    entity: 'ClientCorporation',
+    fields: ['id', 'name'],
+    session: {
+      restUrl: 'https://rest-ger.bullhornstaffing.com/rest-services/corp-token/',
+      BhRestToken: 'rest-session-secret',
+    },
+    count: 5,
+  });
+
+  assert.equal(requestedUrl.searchParams.get('fields'), 'id,name');
+});
+
+test('refreshes an expired OAuth token and creates a new Bullhorn REST session', async () => {
+  process.env.SUPABASE_URL = 'https://example.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'server-secret';
+  process.env.INTEGRATION_ENCRYPTION_KEY = 'c'.repeat(64);
+  process.env.BULLHORN_CLIENT_ID = 'client-id';
+  process.env.BULLHORN_CLIENT_SECRET = 'client-secret';
+
+  const storedRefreshCiphertext = encrypt('stored-refresh-token');
+  const requests = [];
+  globalThis.fetch = async (url, init = {}) => {
+    const parsed = new URL(url);
+    requests.push({ parsed, init });
+
+    if (parsed.host === 'example.supabase.co' && init.method !== 'PATCH') {
+      return Response.json([
+        {
+          provider: 'bullhorn',
+          status: 'connected',
+          token_ciphertext: encrypt('expired-access-token'),
+          refresh_token_ciphertext: storedRefreshCiphertext,
+          access_token_expires_at: '2026-08-20T00:00:00.000Z',
+          rest_url: 'https://rest70.bullhornstaffing.com/rest-services/corp-token/',
+          metadata: {
+            oauthUrl: 'https://auth-ger.bullhornstaffing.com/oauth',
+            restBaseUrl: 'https://rest-ger.bullhornstaffing.com/rest-services',
+          },
+        },
+      ]);
+    }
+    if (parsed.pathname.endsWith('/token')) {
+      return Response.json({
+        access_token: 'refreshed-access-token',
+        refresh_token: 'rotated-refresh-token',
+        expires_in: 600,
+      });
+    }
+    if (parsed.host === 'example.supabase.co' && init.method === 'PATCH') {
+      return Response.json([{ provider: 'bullhorn', status: 'connected' }]);
+    }
+    if (parsed.pathname.endsWith('/login')) {
+      return Response.json({
+        BhRestToken: 'new-rest-session-token',
+        restUrl: 'https://rest70.bullhornstaffing.com/rest-services/corp-token/',
+      });
+    }
+    throw new Error(`Unexpected fetch: ${parsed}`);
+  };
+
+  const session = await getBullhornRestSession();
+  const refreshRequest = requests.find(({ parsed }) => parsed.pathname.endsWith('/token'));
+  const loginRequest = requests.find(({ parsed }) => parsed.pathname.endsWith('/login'));
+
+  assert.equal(session.diagnostics.accessTokenRefreshed, true);
+  assert.equal(session.diagnostics.restSessionCreated, true);
+  assert.equal(refreshRequest.parsed.searchParams.get('grant_type'), 'refresh_token');
+  assert.equal(loginRequest.parsed.searchParams.get('access_token'), 'refreshed-access-token');
+  assert.equal(JSON.stringify(session.diagnostics).includes('token'), false);
+});
+
+test('recreates the Bullhorn REST session once after a 401 response', async () => {
+  process.env.SUPABASE_URL = 'https://example.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'server-secret';
+  process.env.INTEGRATION_ENCRYPTION_KEY = 'd'.repeat(64);
+
+  let entityAttempts = 0;
+  globalThis.fetch = async (url, init = {}) => {
+    const parsed = new URL(url);
+    if (parsed.pathname.endsWith('/query/ClientCorporation')) {
+      entityAttempts += 1;
+      if (entityAttempts === 1) {
+        return Response.json({ errorMessage: 'Session expired' }, { status: 401 });
+      }
+      assert.equal(init.headers.BhRestToken, 'replacement-rest-session');
+      return Response.json({ data: [{ id: 7, name: 'Recovered' }], count: 1, start: 0 });
+    }
+    if (parsed.host === 'example.supabase.co') {
+      return Response.json([
+        {
+          provider: 'bullhorn',
+          status: 'connected',
+          token_ciphertext: encrypt('current-access-token'),
+          refresh_token_ciphertext: encrypt('current-refresh-token'),
+          access_token_expires_at: '2099-01-01T00:00:00.000Z',
+          rest_url: 'https://rest70.bullhornstaffing.com/rest-services/corp-token/',
+          metadata: { restBaseUrl: 'https://rest-ger.bullhornstaffing.com/rest-services' },
+        },
+      ]);
+    }
+    if (parsed.pathname.endsWith('/login')) {
+      return Response.json({
+        BhRestToken: 'replacement-rest-session',
+        restUrl: 'https://rest70.bullhornstaffing.com/rest-services/corp-token/',
+      });
+    }
+    throw new Error(`Unexpected fetch: ${parsed}`);
+  };
+
+  const originalSession = {
+    restUrl: 'https://rest70.bullhornstaffing.com/rest-services/corp-token/',
+    BhRestToken: 'expired-rest-session',
+  };
+  const page = await queryBullhornEntityPage({
+    entity: 'ClientCorporation',
+    fields: ['id', 'name'],
+    session: originalSession,
+    count: 5,
+  });
+
+  assert.equal(entityAttempts, 2);
+  assert.equal(page.httpStatus, 200);
+  assert.equal(page.restSessionRecreated, true);
+  assert.equal(originalSession.BhRestToken, 'replacement-rest-session');
 });
 
 test('paginates Bullhorn reads until the final partial page', async () => {
