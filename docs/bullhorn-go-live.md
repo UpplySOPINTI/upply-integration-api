@@ -30,7 +30,7 @@ https://upply-integration-api.vercel.app/api/bullhorn/oauth/callback
 
 ## Activation after Bullhorn resolves OAuth
 
-1. In the same browser session in which the dedicated read-only API user accepted Bullhorn's terms, open `https://upply-integration-api.vercel.app/api/bullhorn/connect`. The service stores a one-time OAuth state and redirects the browser to Bullhorn. Sign in as `upplyjobs.api` if prompted. Bullhorn then returns the browser to the registered callback with the authorization code and matching state; credentials are never added to the redirect URL.
+1. In the same browser session in which the dedicated read-only API user accepted Bullhorn's terms, open `https://upply-integration-api.vercel.app/api/bullhorn/connect`. Sign in as `upplyjobs.api` if prompted. Because Bullhorn GER currently crashes when the standard OAuth `state` parameter is present, the service uses a temporary compensating control: a hashed, ten-minute, single-use nonce bound to a Secure, HttpOnly browser cookie plus exact callback `client_id` validation. The nonce and credentials are never added to the Bullhorn redirect URL. Remove this workaround and restore provider state as soon as Bullhorn resolves the upstream defect.
 2. Confirm `GET /api/bullhorn/status` reports a connected Bullhorn connection.
 3. Probe all allowed entity permissions without returning entity payloads:
 
