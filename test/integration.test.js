@@ -115,180 +115,43 @@ test('uses discovered Bullhorn cluster and configured redirect URI for code exch
   );
 });
 
-test('authorizes the dedicated Bullhorn API user server-side and forwards only the callback', async () => {
+test('starts Bullhorn OAuth in the browser with persisted state and no credentials', async () => {
   process.env.BULLHORN_CLIENT_ID = 'client-id';
   process.env.BULLHORN_USERNAME = 'upplyjobs.api';
-  process.env.BULLHORN_PASSWORD = 'api-password';
   process.env.BULLHORN_REDIRECT_URI =
     'https://upply-integration-api.vercel.app/api/bullhorn/oauth/callback';
   process.env.SUPABASE_URL = 'https://example.supabase.co';
   process.env.SUPABASE_SERVICE_ROLE_KEY = 'server-secret';
 
-  let authorizeRequest;
-  globalThis.fetch = async (url, init = {}) => {
-    const parsed = new URL(url);
-    if (parsed.pathname.endsWith('/loginInfo')) {
-      return Response.json({
-        oauthUrl: 'https://auth-ger.bullhornstaffing.com/oauth',
-        restUrl: 'https://rest-ger.bullhornstaffing.com/rest-services',
-      });
-    }
-    if (parsed.host === 'example.supabase.co') {
-      return new Response(null, { status: 201 });
-    }
-    if (parsed.pathname.endsWith('/authorize')) {
-      authorizeRequest = { url: parsed, init };
-      const callback = new URL(process.env.BULLHORN_REDIRECT_URI);
-      callback.searchParams.set('code', 'authorization-code');
-      callback.searchParams.set('state', parsed.searchParams.get('state'));
-      return new Response(null, {
-        status: 302,
-        headers: { Location: callback.toString() },
-      });
-    }
-    throw new Error(`Unexpected fetch: ${parsed}`);
-  };
-
-  const response = await connectBullhorn();
-  const location = new URL(response.headers.get('location'));
-  const state = authorizeRequest.url.searchParams.get('state');
-
-  assert.equal(response.status, 302);
-  assert.equal(location.origin, 'https://upply-integration-api.vercel.app');
-  assert.equal(location.pathname, '/api/bullhorn/oauth/callback');
-  assert.equal(location.searchParams.get('code'), 'authorization-code');
-  assert.equal(location.searchParams.get('state'), state);
-  assert.equal(location.searchParams.has('username'), false);
-  assert.equal(location.searchParams.has('password'), false);
-  assert.match(response.headers.get('set-cookie'), new RegExp(`__Host-bh_oauth_state=${state}`));
-  assert.equal(authorizeRequest.url.searchParams.get('action'), 'Login');
-  assert.equal(authorizeRequest.url.searchParams.get('username'), 'upplyjobs.api');
-  assert.equal(authorizeRequest.url.searchParams.get('password'), 'api-password');
-  assert.equal(
-    authorizeRequest.url.searchParams.get('redirect_uri'),
-    process.env.BULLHORN_REDIRECT_URI
-  );
-  assert.equal(authorizeRequest.init.redirect, 'manual');
-});
-
-test('rejects a Bullhorn authorization redirect outside the configured callback', async () => {
-  process.env.BULLHORN_CLIENT_ID = 'client-id';
-  process.env.BULLHORN_USERNAME = 'upplyjobs.api';
-  process.env.BULLHORN_PASSWORD = 'api-password';
-  process.env.BULLHORN_REDIRECT_URI =
-    'https://upply-integration-api.vercel.app/api/bullhorn/oauth/callback';
-  process.env.SUPABASE_URL = 'https://example.supabase.co';
-  process.env.SUPABASE_SERVICE_ROLE_KEY = 'server-secret';
-
+  const requests = [];
   globalThis.fetch = async (url) => {
     const parsed = new URL(url);
+    requests.push(parsed);
     if (parsed.pathname.endsWith('/loginInfo')) {
       return Response.json({ oauthUrl: 'https://auth-ger.bullhornstaffing.com/oauth' });
     }
     if (parsed.host === 'example.supabase.co') {
       return new Response(null, { status: 201 });
     }
-    if (parsed.pathname.endsWith('/authorize')) {
-      return new Response(null, {
-        status: 302,
-        headers: { Location: 'https://attacker.example/callback?code=stolen&state=wrong' },
-      });
-    }
     throw new Error(`Unexpected fetch: ${parsed}`);
   };
 
   const response = await connectBullhorn();
-  const body = await response.json();
+  const location = new URL(response.headers.get('location'));
+  const state = location.searchParams.get('state');
 
-  assert.equal(response.status, 502);
-  assert.equal(body.stage, 'authorize');
-  assert.equal(body.error, 'Bullhorn returned an invalid OAuth callback.');
-});
-
-test('classifies a Bullhorn login page without exposing its HTML or credentials', async () => {
-  process.env.BULLHORN_CLIENT_ID = 'client-id';
-  process.env.BULLHORN_USERNAME = 'upplyjobs.api';
-  process.env.BULLHORN_PASSWORD = 'api-password';
-  process.env.BULLHORN_REDIRECT_URI =
-    'https://upply-integration-api.vercel.app/api/bullhorn/oauth/callback';
-  process.env.SUPABASE_URL = 'https://example.supabase.co';
-  process.env.SUPABASE_SERVICE_ROLE_KEY = 'server-secret';
-
-  const warnings = [];
-  const originalWarn = console.warn;
-  console.warn = (...values) => warnings.push(values.join(' '));
-
-  try {
-    globalThis.fetch = async (url) => {
-      const parsed = new URL(url);
-      if (parsed.pathname.endsWith('/loginInfo')) {
-        return Response.json({ oauthUrl: 'https://auth-ger.bullhornstaffing.com/oauth' });
-      }
-      if (parsed.host === 'example.supabase.co') {
-        return new Response(null, { status: 201 });
-      }
-      if (parsed.pathname.endsWith('/authorize')) {
-        return new Response(
-          '<html><form><input name="username"><input type="password" value="api-password"></form></html>',
-          { status: 200, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
-        );
-      }
-      throw new Error(`Unexpected fetch: ${parsed}`);
-    };
-
-    const response = await connectBullhorn();
-    const body = await response.json();
-    const serialized = JSON.stringify(body);
-
-    assert.equal(response.status, 502);
-    assert.equal(body.diagnosis.pageKind, 'login');
-    assert.equal(body.diagnosis.hasPasswordField, true);
-    assert.equal(serialized.includes('<html>'), false);
-    assert.equal(serialized.includes('api-password'), false);
-    assert.equal(warnings.join(' ').includes('api-password'), false);
-  } finally {
-    console.warn = originalWarn;
-  }
-});
-
-test('classifies Bullhorn terms without returning the upstream page', async () => {
-  process.env.BULLHORN_CLIENT_ID = 'client-id';
-  process.env.BULLHORN_USERNAME = 'upplyjobs.api';
-  process.env.BULLHORN_PASSWORD = 'api-password';
-  process.env.BULLHORN_REDIRECT_URI =
-    'https://upply-integration-api.vercel.app/api/bullhorn/oauth/callback';
-  process.env.SUPABASE_URL = 'https://example.supabase.co';
-  process.env.SUPABASE_SERVICE_ROLE_KEY = 'server-secret';
-
-  const originalWarn = console.warn;
-  console.warn = () => {};
-  try {
-    globalThis.fetch = async (url) => {
-      const parsed = new URL(url);
-      if (parsed.pathname.endsWith('/loginInfo')) {
-        return Response.json({ oauthUrl: 'https://auth-ger.bullhornstaffing.com/oauth' });
-      }
-      if (parsed.host === 'example.supabase.co') {
-        return new Response(null, { status: 201 });
-      }
-      if (parsed.pathname.endsWith('/authorize')) {
-        return new Response('<html><h1>Terms of Service</h1><button>I agree</button></html>', {
-          status: 200,
-          headers: { 'Content-Type': 'text/html' },
-        });
-      }
-      throw new Error(`Unexpected fetch: ${parsed}`);
-    };
-
-    const response = await connectBullhorn();
-    const body = await response.json();
-
-    assert.equal(body.diagnosis.pageKind, 'terms');
-    assert.equal(body.diagnosis.mentionsTerms, true);
-    assert.equal(JSON.stringify(body).includes('Terms of Service'), false);
-  } finally {
-    console.warn = originalWarn;
-  }
+  assert.equal(response.status, 302);
+  assert.equal(location.origin, 'https://auth-ger.bullhornstaffing.com');
+  assert.equal(location.pathname, '/oauth/authorize');
+  assert.equal(location.searchParams.get('client_id'), 'client-id');
+  assert.equal(location.searchParams.get('response_type'), 'code');
+  assert.equal(location.searchParams.get('redirect_uri'), process.env.BULLHORN_REDIRECT_URI);
+  assert.ok(state);
+  assert.equal(location.searchParams.has('action'), false);
+  assert.equal(location.searchParams.has('username'), false);
+  assert.equal(location.searchParams.has('password'), false);
+  assert.match(response.headers.get('set-cookie'), new RegExp(`__Host-bh_oauth_state=${state}`));
+  assert.equal(requests.length, 2);
 });
 
 test('reads only allowlisted Bullhorn fields and sends the REST token as a header', async () => {
