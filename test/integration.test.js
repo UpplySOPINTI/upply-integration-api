@@ -331,7 +331,9 @@ test('uses tenant-compatible fields and sorting for Bullhorn indexed entities', 
 
   const corporationUrl = requestedUrls[0];
   const noteUrl = requestedUrls[1];
-  assert.equal(corporationUrl.searchParams.get('fields').split(',').includes('isDeleted'), false);
+  const corporationFields = corporationUrl.searchParams.get('fields').split(',');
+  assert.equal(corporationFields.includes('isDeleted'), false);
+  assert.equal(corporationFields.includes('owner'), false);
   assert.equal(corporationUrl.searchParams.get('sort'), 'id');
   assert.equal(noteUrl.pathname.endsWith('/search/Note'), true);
   assert.equal(noteUrl.searchParams.has('sort'), false);
