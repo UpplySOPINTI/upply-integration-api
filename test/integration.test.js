@@ -274,7 +274,7 @@ test('reads only allowlisted Bullhorn fields and sends the REST token as a heade
   };
 
   const page = await queryBullhornEntityPage({
-    entity: 'ClientCorporation',
+    entity: 'JobOrder',
     session: {
       restUrl: 'https://rest-ger.bullhornstaffing.com/rest-services/corp-token/',
       BhRestToken: 'rest-session-secret',
@@ -284,7 +284,7 @@ test('reads only allowlisted Bullhorn fields and sends the REST token as a heade
   const url = new URL(request.url);
 
   assert.equal(page.data[0].id, 42);
-  assert.equal(url.pathname.endsWith('/query/ClientCorporation'), true);
+  assert.equal(url.pathname.endsWith('/query/JobOrder'), true);
   assert.equal(url.searchParams.get('fields').includes('*'), false);
   assert.equal(url.searchParams.get('where'), 'isDeleted=false');
   assert.equal(request.init.headers.BhRestToken, 'rest-session-secret');
@@ -309,6 +309,10 @@ test('limits a Bullhorn probe to an allowlisted field subset', async () => {
   });
 
   assert.equal(requestedUrl.searchParams.get('fields'), 'id,name');
+  assert.equal(requestedUrl.pathname.endsWith('/search/ClientCorporation'), true);
+  assert.equal(requestedUrl.searchParams.get('query'), 'isDeleted:0');
+  assert.equal(requestedUrl.searchParams.get('sort'), 'id');
+  assert.equal(requestedUrl.searchParams.has('where'), false);
 });
 
 test('refreshes an expired OAuth token and creates a new Bullhorn REST session', async () => {
@@ -378,7 +382,7 @@ test('recreates the Bullhorn REST session once after a 401 response', async () =
   let entityAttempts = 0;
   globalThis.fetch = async (url, init = {}) => {
     const parsed = new URL(url);
-    if (parsed.pathname.endsWith('/query/ClientCorporation')) {
+    if (parsed.pathname.endsWith('/search/ClientCorporation')) {
       entityAttempts += 1;
       if (entityAttempts === 1) {
         return Response.json({ errorMessage: 'Session expired' }, { status: 401 });
