@@ -372,6 +372,47 @@ test('refreshes an expired OAuth token and creates a new Bullhorn REST session',
   assert.equal(refreshRequest.parsed.searchParams.get('grant_type'), 'refresh_token');
   assert.equal(loginRequest.parsed.searchParams.get('access_token'), 'refreshed-access-token');
   assert.equal(JSON.stringify(session.diagnostics).includes('token'), false);
+  const sessionStoreRequest = requests.find(({ parsed, init }) => {
+    if (parsed.host !== 'example.supabase.co' || init.method !== 'PATCH' || !init.body) return false;
+    return Object.hasOwn(JSON.parse(init.body), 'rest_token_ciphertext');
+  });
+  const storedSessionBody = JSON.parse(sessionStoreRequest.init.body);
+  assert.notEqual(storedSessionBody.rest_token_ciphertext, 'new-rest-session-token');
+  assert.equal(JSON.stringify(storedSessionBody).includes('new-rest-session-token'), false);
+});
+
+test('reuses an encrypted Bullhorn REST session without logging in again', async () => {
+  process.env.SUPABASE_URL = 'https://example.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'server-secret';
+  process.env.INTEGRATION_ENCRYPTION_KEY = 'e'.repeat(64);
+
+  let bullhornCalled = false;
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    if (parsed.host !== 'example.supabase.co') {
+      bullhornCalled = true;
+      throw new Error(`Unexpected Bullhorn request: ${parsed}`);
+    }
+    return Response.json([
+      {
+        provider: 'bullhorn',
+        status: 'connected',
+        token_ciphertext: encrypt('current-access-token'),
+        refresh_token_ciphertext: encrypt('current-refresh-token'),
+        rest_token_ciphertext: encrypt('stored-rest-session'),
+        access_token_expires_at: '2099-01-01T00:00:00.000Z',
+        rest_url: 'https://rest70.bullhornstaffing.com/rest-services/corp-token/',
+        metadata: { restBaseUrl: 'https://rest-ger.bullhornstaffing.com/rest-services' },
+      },
+    ]);
+  };
+
+  const session = await getBullhornRestSession();
+
+  assert.equal(session.BhRestToken, 'stored-rest-session');
+  assert.equal(session.diagnostics.restSessionCreated, false);
+  assert.equal(session.diagnostics.restSessionReused, true);
+  assert.equal(bullhornCalled, false);
 });
 
 test('recreates the Bullhorn REST session once after a 401 response', async () => {
