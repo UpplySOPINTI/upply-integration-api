@@ -46,6 +46,7 @@ export async function GET(request) {
         entity: test.entity,
         fields: test.fields,
         httpStatus: page.httpStatus,
+        operation: page.operation,
         restHost,
         restSessionPresent: Boolean(session.BhRestToken),
         restSessionRecreated: page.restSessionRecreated,
