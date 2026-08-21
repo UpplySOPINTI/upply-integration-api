@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { exchangeAuthorizationCode } from '../lib/bullhorn-oauth.js';
+import { GET as connectBullhorn } from '../app/api/bullhorn/connect/route.js';
 import {
   queryBullhornEntityPage,
   readBullhornEntity,
@@ -18,7 +19,18 @@ const originalFetch = globalThis.fetch;
 
 test.afterEach(() => {
   globalThis.fetch = originalFetch;
-  delete process.env.INTEGRATION_ADMIN_KEY;
+  for (const key of [
+    'INTEGRATION_ADMIN_KEY',
+    'BULLHORN_CLIENT_ID',
+    'BULLHORN_CLIENT_SECRET',
+    'BULLHORN_USERNAME',
+    'BULLHORN_PASSWORD',
+    'BULLHORN_REDIRECT_URI',
+    'SUPABASE_URL',
+    'SUPABASE_SERVICE_ROLE_KEY',
+  ]) {
+    delete process.env[key];
+  }
 });
 
 test('protects internal integration routes with a bearer secret', async () => {
@@ -101,6 +113,96 @@ test('uses discovered Bullhorn cluster and configured redirect URI for code exch
     tokenUrl.searchParams.get('redirect_uri'),
     'https://upply-integration-api.vercel.app/api/bullhorn/oauth/callback'
   );
+});
+
+test('authorizes the dedicated Bullhorn API user server-side and forwards only the callback', async () => {
+  process.env.BULLHORN_CLIENT_ID = 'client-id';
+  process.env.BULLHORN_USERNAME = 'upplyjobs.api';
+  process.env.BULLHORN_PASSWORD = 'api-password';
+  process.env.BULLHORN_REDIRECT_URI =
+    'https://upply-integration-api.vercel.app/api/bullhorn/oauth/callback';
+  process.env.SUPABASE_URL = 'https://example.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'server-secret';
+
+  let authorizeRequest;
+  globalThis.fetch = async (url, init = {}) => {
+    const parsed = new URL(url);
+    if (parsed.pathname.endsWith('/loginInfo')) {
+      return Response.json({
+        oauthUrl: 'https://auth-ger.bullhornstaffing.com/oauth',
+        restUrl: 'https://rest-ger.bullhornstaffing.com/rest-services',
+      });
+    }
+    if (parsed.host === 'example.supabase.co') {
+      return new Response(null, { status: 201 });
+    }
+    if (parsed.pathname.endsWith('/authorize')) {
+      authorizeRequest = { url: parsed, init };
+      const callback = new URL(process.env.BULLHORN_REDIRECT_URI);
+      callback.searchParams.set('code', 'authorization-code');
+      callback.searchParams.set('state', parsed.searchParams.get('state'));
+      return new Response(null, {
+        status: 302,
+        headers: { Location: callback.toString() },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${parsed}`);
+  };
+
+  const response = await connectBullhorn();
+  const location = new URL(response.headers.get('location'));
+  const state = authorizeRequest.url.searchParams.get('state');
+
+  assert.equal(response.status, 302);
+  assert.equal(location.origin, 'https://upply-integration-api.vercel.app');
+  assert.equal(location.pathname, '/api/bullhorn/oauth/callback');
+  assert.equal(location.searchParams.get('code'), 'authorization-code');
+  assert.equal(location.searchParams.get('state'), state);
+  assert.equal(location.searchParams.has('username'), false);
+  assert.equal(location.searchParams.has('password'), false);
+  assert.match(response.headers.get('set-cookie'), new RegExp(`__Host-bh_oauth_state=${state}`));
+  assert.equal(authorizeRequest.url.searchParams.get('action'), 'Login');
+  assert.equal(authorizeRequest.url.searchParams.get('username'), 'upplyjobs.api');
+  assert.equal(authorizeRequest.url.searchParams.get('password'), 'api-password');
+  assert.equal(
+    authorizeRequest.url.searchParams.get('redirect_uri'),
+    process.env.BULLHORN_REDIRECT_URI
+  );
+  assert.equal(authorizeRequest.init.redirect, 'manual');
+});
+
+test('rejects a Bullhorn authorization redirect outside the configured callback', async () => {
+  process.env.BULLHORN_CLIENT_ID = 'client-id';
+  process.env.BULLHORN_USERNAME = 'upplyjobs.api';
+  process.env.BULLHORN_PASSWORD = 'api-password';
+  process.env.BULLHORN_REDIRECT_URI =
+    'https://upply-integration-api.vercel.app/api/bullhorn/oauth/callback';
+  process.env.SUPABASE_URL = 'https://example.supabase.co';
+  process.env.SUPABASE_SERVICE_ROLE_KEY = 'server-secret';
+
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(url);
+    if (parsed.pathname.endsWith('/loginInfo')) {
+      return Response.json({ oauthUrl: 'https://auth-ger.bullhornstaffing.com/oauth' });
+    }
+    if (parsed.host === 'example.supabase.co') {
+      return new Response(null, { status: 201 });
+    }
+    if (parsed.pathname.endsWith('/authorize')) {
+      return new Response(null, {
+        status: 302,
+        headers: { Location: 'https://attacker.example/callback?code=stolen&state=wrong' },
+      });
+    }
+    throw new Error(`Unexpected fetch: ${parsed}`);
+  };
+
+  const response = await connectBullhorn();
+  const body = await response.json();
+
+  assert.equal(response.status, 502);
+  assert.equal(body.stage, 'authorize');
+  assert.equal(body.error, 'Bullhorn returned an invalid OAuth callback.');
 });
 
 test('reads only allowlisted Bullhorn fields and sends the REST token as a header', async () => {
