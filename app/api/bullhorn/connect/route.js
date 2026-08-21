@@ -6,9 +6,10 @@ export async function GET() {
   try {
     const clientId = process.env.BULLHORN_CLIENT_ID;
     const username = process.env.BULLHORN_USERNAME;
+    const password = process.env.BULLHORN_PASSWORD;
     const redirectUri = process.env.BULLHORN_REDIRECT_URI;
 
-    if (!clientId || !username || !redirectUri) {
+    if (!clientId || !username || !password || !redirectUri) {
       return Response.json(
         {
           ok: false,
@@ -16,6 +17,7 @@ export async function GET() {
           missing: {
             clientId: !clientId,
             username: !username,
+            password: !password,
             redirectUri: !redirectUri,
           },
         },
@@ -68,11 +70,59 @@ export async function GET() {
     authorizeUrl.searchParams.set('response_type', 'code');
     authorizeUrl.searchParams.set('redirect_uri', redirectUri);
     authorizeUrl.searchParams.set('state', state);
+    authorizeUrl.searchParams.set('action', 'Login');
+    authorizeUrl.searchParams.set('username', username);
+    authorizeUrl.searchParams.set('password', password);
+
+    // Keep the dedicated API user's credentials server-side. Bullhorn returns the
+    // callback location with the authorization code; only that safe location is
+    // forwarded to the browser.
+    const authorizeResponse = await fetch(authorizeUrl, {
+      method: 'GET',
+      cache: 'no-store',
+      redirect: 'manual',
+    });
+    const location = authorizeResponse.headers.get('location');
+
+    if (!location) {
+      return Response.json(
+        {
+          ok: false,
+          stage: 'authorize',
+          status: authorizeResponse.status,
+          error: 'Bullhorn authorization did not return an OAuth callback.',
+          hint: 'Confirm that the dedicated API user has accepted the Bullhorn terms once.',
+        },
+        { status: 502, headers: { 'Cache-Control': 'no-store' } }
+      );
+    }
+
+    const callbackUrl = new URL(location, redirectUri);
+    const expectedCallback = new URL(redirectUri);
+    const returnedState = callbackUrl.searchParams.get('state');
+    const code = callbackUrl.searchParams.get('code');
+    const oauthError = callbackUrl.searchParams.get('error');
+
+    if (
+      callbackUrl.origin !== expectedCallback.origin ||
+      callbackUrl.pathname !== expectedCallback.pathname ||
+      returnedState !== state ||
+      (!code && !oauthError)
+    ) {
+      return Response.json(
+        {
+          ok: false,
+          stage: 'authorize',
+          error: 'Bullhorn returned an invalid OAuth callback.',
+        },
+        { status: 502, headers: { 'Cache-Control': 'no-store' } }
+      );
+    }
 
     return new Response(null, {
       status: 302,
       headers: {
-        Location: authorizeUrl.toString(),
+        Location: callbackUrl.toString(),
         'Cache-Control': 'no-store',
         'Set-Cookie': `__Host-bh_oauth_state=${state}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=600`,
       },

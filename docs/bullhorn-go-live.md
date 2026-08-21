@@ -30,7 +30,7 @@ https://upply-integration-api.vercel.app/api/bullhorn/oauth/callback
 
 ## Activation after Bullhorn resolves OAuth
 
-1. Open `https://upply-integration-api.vercel.app/api/bullhorn/connect` and complete consent with the dedicated read-only API user.
+1. After the dedicated read-only API user has accepted Bullhorn's terms once, open `https://upply-integration-api.vercel.app/api/bullhorn/connect`. The service authorizes that API user server-side and forwards only the authorization-code callback to the browser; the username and password are never placed in the browser URL.
 2. Confirm `GET /api/bullhorn/status` reports a connected Bullhorn connection.
 3. Probe all allowed entity permissions without returning entity payloads:
 
