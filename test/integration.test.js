@@ -315,6 +315,28 @@ test('limits a Bullhorn probe to an allowlisted field subset', async () => {
   assert.equal(requestedUrl.searchParams.has('where'), false);
 });
 
+test('uses tenant-compatible fields and sorting for Bullhorn indexed entities', async () => {
+  const requestedUrls = [];
+  globalThis.fetch = async (url) => {
+    requestedUrls.push(new URL(url));
+    return Response.json({ data: [{ id: 1 }], count: 1, start: 0 });
+  };
+  const session = {
+    restUrl: 'https://rest-ger.bullhornstaffing.com/rest-services/corp-token/',
+    BhRestToken: 'rest-session-secret',
+  };
+
+  await queryBullhornEntityPage({ entity: 'ClientCorporation', session, count: 1 });
+  await queryBullhornEntityPage({ entity: 'Note', session, count: 1 });
+
+  const corporationUrl = requestedUrls[0];
+  const noteUrl = requestedUrls[1];
+  assert.equal(corporationUrl.searchParams.get('fields').split(',').includes('isDeleted'), false);
+  assert.equal(corporationUrl.searchParams.get('sort'), 'id');
+  assert.equal(noteUrl.pathname.endsWith('/search/Note'), true);
+  assert.equal(noteUrl.searchParams.has('sort'), false);
+});
+
 test('refreshes an expired OAuth token and creates a new Bullhorn REST session', async () => {
   process.env.SUPABASE_URL = 'https://example.supabase.co';
   process.env.SUPABASE_SERVICE_ROLE_KEY = 'server-secret';
