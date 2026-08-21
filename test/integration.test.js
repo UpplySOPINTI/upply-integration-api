@@ -309,10 +309,10 @@ test('limits a Bullhorn probe to an allowlisted field subset', async () => {
   });
 
   assert.equal(requestedUrl.searchParams.get('fields'), 'id,name');
-  assert.equal(requestedUrl.pathname.endsWith('/search/ClientCorporation'), true);
-  assert.equal(requestedUrl.searchParams.get('query'), 'isDeleted:0');
-  assert.equal(requestedUrl.searchParams.get('sort'), 'id');
-  assert.equal(requestedUrl.searchParams.has('where'), false);
+  assert.equal(requestedUrl.pathname.endsWith('/query/ClientCorporation'), true);
+  assert.equal(requestedUrl.searchParams.get('where'), 'id>0');
+  assert.equal(requestedUrl.searchParams.get('orderBy'), 'id');
+  assert.equal(requestedUrl.searchParams.has('query'), false);
 });
 
 test('uses tenant-compatible fields and sorting for Bullhorn indexed entities', async () => {
@@ -334,7 +334,8 @@ test('uses tenant-compatible fields and sorting for Bullhorn indexed entities', 
   const corporationFields = corporationUrl.searchParams.get('fields').split(',');
   assert.equal(corporationFields.includes('isDeleted'), false);
   assert.equal(corporationFields.includes('owner'), false);
-  assert.equal(corporationUrl.searchParams.get('sort'), 'id');
+  assert.equal(corporationUrl.searchParams.get('where'), 'id>0');
+  assert.equal(corporationUrl.searchParams.get('orderBy'), 'id');
   assert.equal(noteUrl.pathname.endsWith('/search/Note'), true);
   assert.equal(noteUrl.searchParams.has('sort'), false);
 });
@@ -447,7 +448,7 @@ test('recreates the Bullhorn REST session once after a 401 response', async () =
   let entityAttempts = 0;
   globalThis.fetch = async (url, init = {}) => {
     const parsed = new URL(url);
-    if (parsed.pathname.endsWith('/search/ClientCorporation')) {
+    if (parsed.pathname.endsWith('/query/ClientCorporation')) {
       entityAttempts += 1;
       if (entityAttempts === 1) {
         return Response.json({ errorMessage: 'Session expired' }, { status: 401 });
