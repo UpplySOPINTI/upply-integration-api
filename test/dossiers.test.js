@@ -26,10 +26,13 @@ test('uses explicit supported candidate fields and passes pagination without cre
   assert.equal(result.nextStart,2);assert.equal(result.total,2);
 });
 test('keeps actual note deletion flags and never silently converts upstream failure to empty data',async()=>{
-  globalThis.fetch=async()=>Response.json({data:[{id:4,isDeleted:true}]});
+  let noteUrl;
+  globalThis.fetch=async(url)=>{noteUrl=new URL(url);return Response.json({data:[{id:4,isDeleted:true}]});};
   const opts=dossierRequest(new URLSearchParams('mode=notes'));
   const session={restUrl:'https://rest72.test/corp/',BhRestToken:'token'};
   assert.equal((await readDossierPage(opts,session)).data[0].isDeleted,true);
+  assert.equal(noteUrl.searchParams.get('query'),'noteID:[1 TO *]');
+  assert.equal(noteUrl.searchParams.get('sort'),'noteID');
   globalThis.fetch=async()=>new Response('private error details',{status:403});
   await assert.rejects(()=>readDossierPage(opts,session),/HTTP 403/);
 });
