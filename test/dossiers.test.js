@@ -1,8 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { dossierRequest, readDossierPage } from '../lib/bullhorn-dossiers.js';
+import { dossierRequest, readDossierPage, requestJson } from '../lib/bullhorn-dossiers.js';
 import { GET } from '../app/api/bullhorn/dossiers/route.js';
 const originalFetch=globalThis.fetch;
+test('renews an expired REST session once and uses the new host and token',async()=>{
+  const calls=[];let renewals=0;
+  globalThis.fetch=async(url,init)=>{calls.push({url:String(url),token:init.headers.BhRestToken});return calls.length===1?new Response(null,{status:401}):Response.json({data:[]});};
+  const session={restUrl:'https://rest70.test/corp/',BhRestToken:'expired'};
+  await requestJson(session,'search/Note',{start:100},async()=>{renewals++;return{restUrl:'https://rest72.test/corp/',BhRestToken:'fresh'};});
+  assert.equal(renewals,1);assert.equal(calls.length,2);assert.equal(calls[1].token,'fresh');assert.ok(calls[1].url.startsWith('https://rest72.test/'));assert.ok(calls[1].url.includes('start=100'));
+});
 test.afterEach(()=>{globalThis.fetch=originalFetch;delete process.env.INTEGRATION_ADMIN_KEY;});
 test('refuses access before contacting Bullhorn',async()=>{
   process.env.INTEGRATION_ADMIN_KEY='secret';
